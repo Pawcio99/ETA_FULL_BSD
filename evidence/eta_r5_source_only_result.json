@@ -1,0 +1,41 @@
+{
+  "schema": "eta-r5-sourcelock-integration-v1",
+  "project": "ETA_CHERUB_FULL_FreeBSD15.1",
+  "release": "R5",
+  "input_native_R4": {
+    "methods": 85,
+    "errors": 1,
+    "failed_test": "test_actual_stateledger_opens_fresh_database",
+    "error": "sqlite3.OperationalError: database is locked",
+    "uid": 1001,
+    "python": "3.12.15",
+    "sqlite": "3.53.4",
+    "result": "FAIL"
+  },
+  "fix_scope": "existing StateLedger uses sibling 0600 sidecar for flock; SQLite DB locking remains SQLite",
+  "source_private": true,
+  "private_zip_sha256": "2ce41af18010951be82c2619823e9f38968c34c74fceb3683825f2844826bb25",
+  "pinned_package_sha256": "532c109e085423df7222b8e48271d028a56cb397e1781da7592d202648005f26",
+  "pinned_state_sha256": "1410761598ac35349bcd832b348b61e8c1c4fe7a1ded25d549f3eaed2f59c9c4",
+  "installer_sha256": "40e9e3495a8a45718fd66c600deb8b6878ea2ad6b2b35604aa0b9cad6897d62e",
+  "offhost": {
+    "os": "Linux",
+    "python": "3.13.5",
+    "uid": 65534,
+    "tests": {
+      "installer": 86,
+      "sidecar": 18,
+      "real_stack": 47,
+      "w09_diagnostics": 13
+    },
+    "total_pass": 164,
+    "total_fail": 0
+  },
+  "native_R5": "NOT_TESTED",
+  "native_excluded_cases": 3,
+  "independent_reviews": "NOT_PERFORMED",
+  "root_stage_R5": "NOT_AUTHORIZED",
+  "root_install_R5": "NOT_AUTHORIZED",
+  "active_system_changes": false,
+  "main_merge": false
+}

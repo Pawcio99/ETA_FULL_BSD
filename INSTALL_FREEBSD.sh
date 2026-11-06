@@ -14,4 +14,4 @@ PY=/usr/local/bin/python3.12
     exit 2
 }
 exec "$PY" -I -B "$BASE/installer/eta_system_install.py" "$@" \
-    --package "$BASE/packages/ETA_W09_CORE_LAB_R1.zip"
+    --package "$BASE/packages/ETA_W09_STATELOCK_CORE_R5.zip"

@@ -1,7 +1,3 @@
-# Private package input
+# Private W09 R5 sidecar-lock package (not published here)
 
-The public repository deliberately does not contain the W09 source ZIP or the five-module payload. Obtain the operator-approved private artifact `ETA_I3_LAB_INSTALL_R1.zip` or build the exact package from the pinned W09 input using the reviewed `installer/eta_i3_lab.py build-package` command in an admitted non-root Linux offhost environment. Do not publish private sources or SQLite stores here.
-
-Expected payload file: `packages/ETA_W09_CORE_LAB_R1.zip` (113340 bytes). Required SHA-256 is in `PACKAGE_SHA256`; it is a trusted reference pin, not an issuer signature or execution grant. Tests fail without these actual bytes; a filename, URL or report does not supply them.
-
-This package is a scoped W09 core, not a complete ETA FULL distribution and not a native FreeBSD package. No runtime/autostart/native install backend is implemented. The original W09 ZIP pin is `66b5f9834706762325d977d39aac70c99c6f350d5fd54cadc5ac3f8a676e17bb`.
+The public repository does not contain the five-module payload. The private R5 archive `ETA_R5_STATELOCK.zip` contains package `packages/ETA_W09_STATELOCK_CORE_R5.zip`, SHA-256 `532c109e085423df7222b8e48271d028a56cb397e1781da7592d202648005f26`. It is a source-only candidate with a revised StateLedger using `cherub-state.sqlite3.lock` and a separately versioned inactive installer. The private source needs independent secure review; public Code Review does not attest it. No native root staging, install, grants, migration, service or FULL release admission has occurred.

@@ -26,16 +26,16 @@ import subprocess
 import sys
 import zipfile
 
-VERSION = '1.0.0-candidate4'
-PAYLOAD_SHA = '023cfa3776f37d9911a18661ff0d6920e3aa68476467b6a5eaeecb209a532b41'
+VERSION = '1.0.0-candidate5'
+PAYLOAD_SHA = '532c109e085423df7222b8e48271d028a56cb397e1781da7592d202648005f26'
 PINS = {
     'agentctl.py': 'a0564e931d4fd3b437613fb204f08e17a2263cfcc372724ac308439c86a5965e',
     'cherub_candidate.py': 'ad9acb05e26b890d6917839312c38ba854ee79d602ec62e8eeb0f74535735f7a',
     'cherub_flow.py': 'e5cd1b7f7f7f1d3e637cbdb62cdfdcddd90841113a7ecaf49f4ad7f76e306255',
-    'cherub_state.py': 'ff56156e3904d65bb8bb70091a7b8fa2782d773879afaf16929a60d4a8a87848',
+    'cherub_state.py': '1410761598ac35349bcd832b348b61e8c1c4fe7a1ded25d549f3eaed2f59c9c4',
     'cherub_task_contract.py': 'eb2986fcce870bb191ddc50b0e72faaa98676d657b3fda5549b7ecc7746a9d7c',
 }
-RID = 'w09-v2-' + PAYLOAD_SHA[:16]
+RID = 'w09-v2-lock-r5-' + PAYLOAD_SHA[:12]
 RELEASES = 'usr/local/libexec/eta-cherub-full/releases'
 CONTROL = 'var/db/eta-cherub-full-installer'
 TX = CONTROL + '/' + RID
@@ -43,6 +43,7 @@ STAGE = RELEASES + '/.staging-' + RID
 FINAL = RELEASES + '/' + RID
 WITHDRAWN = RELEASES + '/.withdrawn-' + RID
 DATABASE = TX + '/state/cherub-state.sqlite3'
+DBLOCK = DATABASE + '.lock'
 LOCK = CONTROL + '/.writer.lock'
 ANCHORS = ('usr', 'usr/local', 'usr/local/libexec',
            'usr/local/libexec/eta-cherub-full', RELEASES, 'var', 'var/db', CONTROL)
@@ -445,7 +446,25 @@ class Engine:
         dfd=f.directory(TX+'/state')
         try: f.secure(dfd,directory=True,mode=0o700)
         finally: os.close(dfd)
-        need(f.listing(TX+'/state') == ['cherub-state.sqlite3'], 'STATE_EXTRA_FILES_OR_WAL')
+        need(f.listing(TX+'/state') == ['cherub-state.sqlite3', 'cherub-state.sqlite3.lock'], 'STATE_EXTRA_FILES_OR_WAL')
+        # Sidecar lock is separate from the SQLite DB inode. All consumers
+        # coordinate on the same persistent .lock file; SQLite handles its DB.
+        lparent,lname = f.parent(DBLOCK)
+        lock_fd = -1
+        try:
+            lock_fd = os.open(lname, os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,
+                              dir_fd=lparent)
+            f.secure(lock_fd,mode=0o600)
+            need(os.fstat(lock_fd).st_size == 0, 'STATE_LOCK_FILE_NOT_EMPTY')
+            fcntl.flock(lock_fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            check_lock = os.stat(lname,dir_fd=lparent,follow_symlinks=False)
+            held_lock = os.fstat(lock_fd)
+            need((check_lock.st_dev,check_lock.st_ino)==(held_lock.st_dev,held_lock.st_ino),
+                 'STATE_LOCK_REBOUND')
+        except BaseException:
+            if lock_fd >= 0: os.close(lock_fd)
+            os.close(lparent)
+            raise
         parent,name = f.parent(DATABASE)
         fd = -1
         db = None
@@ -469,12 +488,15 @@ class Engine:
                 finally: db.close()
             if fd>=0: os.close(fd)
             os.close(parent)
+            if lock_fd >= 0: os.close(lock_fd)
+            os.close(lparent)
     def database_verify(self, lease=None):
         if lease is None:
             with self.database_lock() as locked: return self.database_verify(locked)
         db,held_fd=lease
         f = self.fs
-        need(f.listing(TX+'/state')==['cherub-state.sqlite3'], 'STATE_EXTRA_FILES_OR_WAL')
+        need(f.listing(TX+'/state')==['cherub-state.sqlite3', 'cherub-state.sqlite3.lock'], 'STATE_EXTRA_FILES_OR_WAL')
+        # Sidecar inode/ACL/mode were checked under the retained guard above.
         data = self._read_database_on_retained_fd(held_fd)
         need(data[:16]==b'SQLite format 3\0' and data[18:20]==b'\1\1','STATE_INVALID_OR_WAL')
         before = os.fstat(held_fd)
@@ -496,6 +518,7 @@ class Engine:
     def create_state(self):
         f = self.fs
         f.mkdir(TX+'/state',0o700)
+        f.write(DBLOCK,b'',0o600)
         f.write(DATABASE,b'',0o600)
         parent,name = f.parent(DATABASE)
         fd = os.open(name,os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=parent)
@@ -595,7 +618,7 @@ class Engine:
                     self.database_verify()
                 for p in (STAGE,FINAL):
                     if f.exists(p): f.inventory(p)
-        snapshot={p:f.snapshot(p) for p in ANCHORS + (TX,STAGE,FINAL,WITHDRAWN,DATABASE)}
+        snapshot={p:f.snapshot(p) for p in ANCHORS + (TX,STAGE,FINAL,WITHDRAWN,DATABASE,DBLOCK)}
         root_state = self.database_verify() if f.exists(DATABASE) else None
         code_files = {'/'+FINAL+'/product/tools/'+n:{'sha256':PINS[n],'bytes':len(b),'mode':'0444'}
                       for n,b in sorted(self.pkg.payload.items())}
@@ -604,7 +627,7 @@ class Engine:
              'scope':'SYSTEM_INSTALL_SCOPED_W09_CORE_INACTIVE','observed':current,
              'anchors_and_destinations':snapshot,'state_observation':root_state,
              'files':code_files,'code_metadata':'/'+FINAL+'/RELEASE.json',
-             'fresh_state':'/'+DATABASE,'installation_control':'/'+TX,
+             'fresh_state':'/'+DATABASE,'fresh_state_lock':'/'+DBLOCK,'installation_control':'/'+TX,
              'installation_lock':'/'+LOCK,'stage':'/'+STAGE,'withdrawn':'/'+WITHDRAWN,
              'control_files':['/'+TX+'/identity.json','/'+TX+'/approval.json'],
              'initial_event_files':['/'+TX+f'/events/{n:06}.json' for n in range(1,7)],
