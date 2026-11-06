@@ -1,0 +1,15 @@
+# Defense in depth only; review classification before every publication.
+__pycache__/
+*.pyc
+inputs/
+*.zip
+*.tar
+*.tar.gz
+*.sqlite3
+*.sqlite3-*
+*.db
+.env
+.env.*
+credentials/
+secrets/
+evidence/private/
