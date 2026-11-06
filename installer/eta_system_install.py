@@ -26,7 +26,7 @@ import subprocess
 import sys
 import zipfile
 
-VERSION = '1.0.0-candidate1'
+VERSION = '1.0.0-candidate2'
 PAYLOAD_SHA = '023cfa3776f37d9911a18661ff0d6920e3aa68476467b6a5eaeecb209a532b41'
 PINS = {
     'agentctl.py': 'a0564e931d4fd3b437613fb204f08e17a2263cfcc372724ac308439c86a5965e',
@@ -164,6 +164,7 @@ class NativeACL:
         self.lib.acl_free.restype = ctypes.c_int
     def __call__(self, fd):
         isdir = stat.S_ISDIR(os.fstat(fd).st_mode)
+        access_acl_verified = False
         for kind in ((4, 2, 3) if isdir else (4, 2)):
             # ACL_TYPE_NFS4=4, ACCESS=2, DEFAULT=3 (sys/sys/acl.h).
             ctypes.set_errno(0)
@@ -181,8 +182,12 @@ class NativeACL:
                     trivial = ctypes.c_int(0)
                     need(self.lib.acl_is_trivial_np(acl, ctypes.byref(trivial)) == 0 and trivial.value == 1,
                          'NONTRIVIAL_ACL_REQUIRES_REVIEW')
+                    # EINVAL/EOPNOTSUPP for *every* access-ACL type is not an
+                    # attestation that the filesystem has safe ACL semantics.
+                    access_acl_verified = True
             finally:
                 self.lib.acl_free(acl)
+        need(access_acl_verified, 'ACL_ACCESS_TYPES_UNSUPPORTED_OR_UNVERIFIED')
 
 class Tree:
     """All installer I/O relative to retained root FD, with physical owner-only ancestry.

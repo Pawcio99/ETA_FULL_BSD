@@ -360,9 +360,49 @@ class NativeGateTests(unittest.TestCase):
             acl=s.NativeACL()
             with tempfile.TemporaryFile() as f,self.assertRaisesRegex(s.Blocked,'ACL_READ_ERROR'):acl(f.fileno())
     def test_acl_unsupported_filesystem_contract(self):
+        # A filesystem where every access ACL API is unsupported must NOT
+        # be silently treated as having safe, empty/trivial ACLs.
         fake=MagicMock()
         def get(*args):ctypes.set_errno(s.errno.EOPNOTSUPP);return None
         fake.acl_get_fd_np.side_effect=get
+        with patch.object(s.ctypes,'CDLL',return_value=fake):
+            acl=s.NativeACL()
+            with tempfile.TemporaryFile() as f, self.assertRaisesRegex(s.Blocked,'ACL_ACCESS_TYPES_UNSUPPORTED'):
+                acl(f.fileno())
+        self.assertEqual(fake.acl_get_fd_np.call_count,2)
+    def test_acl_all_access_types_invalid_refused(self):
+        fake=MagicMock()
+        def get(*args):ctypes.set_errno(s.errno.EINVAL);return None
+        fake.acl_get_fd_np.side_effect=get
+        with patch.object(s.ctypes,'CDLL',return_value=fake):
+            acl=s.NativeACL()
+            with tempfile.TemporaryFile() as f, self.assertRaisesRegex(s.Blocked,'ACL_ACCESS_TYPES_UNSUPPORTED'):
+                acl(f.fileno())
+    def test_acl_default_only_does_not_prove_access(self):
+        # An empty POSIX default ACL proves nothing about the access ACL.
+        fake=MagicMock()
+        def get(fd,kind):
+            if kind==3: return 1
+            ctypes.set_errno(s.errno.EOPNOTSUPP); return None
+        fake.acl_get_fd_np.side_effect=get
+        fake.acl_get_entry.return_value=0
+        with patch.object(s.ctypes,'CDLL',return_value=fake):
+            acl=s.NativeACL()
+            with tempfile.TemporaryDirectory(prefix='eta-acl-') as path:
+                fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY)
+                try:
+                    with self.assertRaisesRegex(s.Blocked,'ACL_ACCESS_TYPES_UNSUPPORTED'):
+                        acl(fd)
+                finally: os.close(fd)
+        self.assertEqual(fake.acl_get_fd_np.call_count,3)
+    def test_acl_access_fallback_trivial_pass(self):
+        fake=MagicMock()
+        def get(fd,kind):
+            if kind==4:ctypes.set_errno(s.errno.EINVAL);return None
+            return 1
+        def trivial(ptr,out):ctypes.cast(out,ctypes.POINTER(ctypes.c_int))[0]=1;return 0
+        fake.acl_get_fd_np.side_effect=get
+        fake.acl_is_trivial_np.side_effect=trivial
         with patch.object(s.ctypes,'CDLL',return_value=fake):
             acl=s.NativeACL()
             with tempfile.TemporaryFile() as f:acl(f.fileno())
