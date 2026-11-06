@@ -26,7 +26,7 @@ import subprocess
 import sys
 import zipfile
 
-VERSION = '1.0.0-candidate5'
+VERSION = '1.0.0-candidate6'
 PAYLOAD_SHA = '532c109e085423df7222b8e48271d028a56cb397e1781da7592d202648005f26'
 PINS = {
     'agentctl.py': 'a0564e931d4fd3b437613fb204f08e17a2263cfcc372724ac308439c86a5965e',
@@ -552,9 +552,11 @@ class Engine:
             return {'state':'ABSENT','last_event':None}
         last = rows[-1]
         return {'state':last['state'],'last_event':sha(canonical(last))}
-    def verify_unlocked(self, location=FINAL):
+    def verify_unlocked(self, location=FINAL, lease=None):
+        # A recovery transaction may supply its already-held SQLite+sidecar
+        # lease; never open/close an independent database handle here.
         code=self.code_verify(location)
-        state=self.database_verify()
+        state=self.database_verify(lease)
         return {'result':'VERIFIED_INSTALLED_INACTIVE_CORE','release':RID,
                 'code_location':'/'+location,'state_location':'/'+DATABASE,
                 'code':code,'state':state,'activated':False,'full_product':False,
@@ -706,12 +708,25 @@ class Engine:
             self.recheck(plan['plan']['anchors_and_destinations'])
             need(self.current()==plan['plan']['observed'],'JOURNAL_CHANGED_SINCE_PLAN')
             if decision=='complete':
-                self.verify_unlocked(FINAL if self.fs.exists(FINAL) else STAGE)
-                if self.fs.exists(STAGE): self.fs.move(STAGE,FINAL)
-                result=self.verify_unlocked(); self.event('VERIFIED_INACTIVE')
+                # Both the SQLite EXCLUSIVE lease and the independent sidecar
+                # must remain held THROUGH publication and the final event.
+                # No other thread/process may write after validation but
+                # before the journal declares the operation complete.
+                with self.database_lock(exclusive=True) as lease:
+                    initial=self.verify_unlocked(
+                        FINAL if self.fs.exists(FINAL) else STAGE, lease=lease)
+                    need(initial['state']==plan['plan']['state_observation'],
+                         'RECOVERY_STATE_CHANGED_SINCE_PLAN')
+                    if self.fs.exists(STAGE): self.fs.move(STAGE,FINAL)
+                    result=self.verify_unlocked(lease=lease)
+                    self.event('VERIFIED_INACTIVE')
                 return {**result,'result':'RECOVERED_NO_REEXECUTION'}
             if decision=='complete-withdrawal':
-                self.verify_unlocked(WITHDRAWN); self.event('WITHDRAWN')
+                with self.database_lock(exclusive=True) as lease:
+                    verified=self.verify_unlocked(WITHDRAWN,lease=lease)
+                    need(verified['state']==plan['plan']['state_observation'],
+                         'RECOVERY_STATE_CHANGED_SINCE_PLAN')
+                    self.event('WITHDRAWN')
                 return {'result':'RECOVERED_WITHDRAWAL_DATA_RETAINED','files_deleted':0}
             need(decision=='abort','UNKNOWN_RECOVERY')
             # P2: if an actual database exists, hold an SQLite EXCLUSIVE lease

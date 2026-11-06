@@ -437,6 +437,91 @@ class InstallerTests(unittest.TestCase):
     def test_crash_after_published_event(self):
         self.crash('event_PUBLISHED')
         self.e.recover('complete',self.e.plan('complete')['plan_sha256']);self.e.verify()
+    def _competing_sidecar_and_sqlite_process(self):
+        """A real separate process obeying the StateLedger sidecar contract.
+
+        Exit 3 = refused by flock; exit 4 = flock acquired, but SQLite busy;
+        exit 0 = unsafe full takeover during claimed recovery ownership.
+        """
+        code = """import fcntl, os, sqlite3, sys
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_NOFOLLOW)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    print('SIDECAR_DENIED')
+    sys.exit(3)
+db = sqlite3.connect(sys.argv[2], timeout=0, isolation_level=None)
+try:
+    db.execute('BEGIN IMMEDIATE')
+except sqlite3.OperationalError:
+    print('SQLITE_DENIED')
+    sys.exit(4)
+print('WRITER_ACQUIRED')
+db.execute('ROLLBACK')
+db.close()
+os.close(fd)
+"""
+        return subprocess.run([sys.executable,'-I','-B','-c',code,
+                  str(self.root/s.DBLOCK),str(self.db())],
+                  capture_output=True,text=True,timeout=10)
+    def test_r6_complete_recovery_keeps_sidecar_until_final_event(self):
+        self.crash('after_database')
+        plan=self.e.plan('complete')
+        original=self.e.event
+        seen=[]
+        def check_at_event(state):
+            if state=='VERIFIED_INACTIVE':
+                contender=self._competing_sidecar_and_sqlite_process()
+                seen.append((contender.returncode,contender.stdout.strip()))
+                self.assertEqual(contender.returncode,3,contender.stderr)
+                self.assertEqual(contender.stdout.strip(),'SIDECAR_DENIED')
+            original(state)
+        with patch.object(self.e,'event',side_effect=check_at_event):
+            result=self.e.recover('complete',plan['plan_sha256'])
+        self.assertEqual(result['result'],'RECOVERED_NO_REEXECUTION')
+        self.assertEqual(seen,[(3,'SIDECAR_DENIED')])
+        self.assertEqual(self._competing_sidecar_and_sqlite_process().returncode,0)
+    def test_r6_withdrawal_recovery_keeps_sidecar_until_final_event(self):
+        self.install()
+        self.crash('after_withdraw')
+        plan=self.e.plan('complete-withdrawal')
+        original=self.e.event
+        seen=[]
+        def check_at_event(state):
+            if state=='WITHDRAWN':
+                contender=self._competing_sidecar_and_sqlite_process()
+                seen.append((contender.returncode,contender.stdout.strip()))
+                self.assertEqual(contender.returncode,3,contender.stderr)
+                self.assertEqual(contender.stdout.strip(),'SIDECAR_DENIED')
+            original(state)
+        with patch.object(self.e,'event',side_effect=check_at_event):
+            result=self.e.recover('complete-withdrawal',plan['plan_sha256'])
+        self.assertEqual(result['result'],'RECOVERED_WITHDRAWAL_DATA_RETAINED')
+        self.assertEqual(seen,[(3,'SIDECAR_DENIED')])
+        self.assertEqual(self._competing_sidecar_and_sqlite_process().returncode,0)
+    def test_r6_complete_recovery_refuses_changed_state_after_plan(self):
+        self.crash('after_database')
+        plan=self.e.plan('complete')
+        with sqlite3.connect(self.db()) as conn:
+            conn.execute('INSERT INTO projects VALUES (?,?,?,?)',('late',1,'p','m'))
+        before=snapshot(self.root)
+        with self.assertRaises(s.Blocked):
+            self.e.recover('complete',plan['plan_sha256'])
+        self.assertEqual(snapshot(self.root),before)
+    def test_r6_withdrawal_recovery_refuses_active_writer(self):
+        self.install()
+        self.crash('after_withdraw')
+        plan=self.e.plan('complete-withdrawal')
+        contender=sqlite3.connect(self.db(),timeout=0,isolation_level=None)
+        try:
+            contender.execute('BEGIN EXCLUSIVE')
+            before=snapshot(self.root)
+            with self.assertRaises((sqlite3.OperationalError,BlockingIOError)):
+                self.e.recover('complete-withdrawal',plan['plan_sha256'])
+            self.assertEqual(snapshot(self.root),before)
+        finally:
+            contender.execute('ROLLBACK')
+            contender.close()
     def test_crash_withdraw_recovery(self):
         self.install();before=self.db().read_bytes();self.crash('after_withdraw')
         self.e.recover('complete-withdrawal',self.e.plan('complete-withdrawal')['plan_sha256'])

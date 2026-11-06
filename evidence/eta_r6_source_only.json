@@ -1,0 +1,43 @@
+{
+  "project": "ETA_CHERUB_FULL_FreeBSD15.1",
+  "candidate": "R6",
+  "scope": "W09_FIVE_MODULE_INACTIVE",
+  "parent_commit": "c65a0f1eddfb44949261e17e68d37d688a6b1725",
+  "fix": "maintain SQLite EXCLUSIVE and sidecar lock through final recovery journal events",
+  "r5_native": {
+    "operator_reported_total_pass": 161,
+    "inspect": 0,
+    "plan": 0
+  },
+  "r5_p2_repro": {
+    "method": "two actual separate-process contender tests",
+    "two_r6_tests_on_unchanged_r5": "EXPECTED_FAIL_2_OF_2",
+    "competitor_obtained_db": true
+  },
+  "r6_offhost": {
+    "environment": "Linux Python3.13.5 SQLite3.46.1 ordinary uid1000",
+    "engine_pass": 90,
+    "sidecar_pass": 18,
+    "realstack_pass": 47,
+    "w09_pass": 13,
+    "total_pass": 168,
+    "total_fail": 0
+  },
+  "R6_private_zip": {
+    "sha256": "4eb36d85a1ce861951728cf3318811e235a62add20fa28c4368a39e86de4c60a",
+    "bytes": 115192,
+    "entries": 28,
+    "manifest_rows_verified": 27
+  },
+  "source_hashes": {
+    "installer_sha256": "9d598090d712cbf63d6816e85ecf1e287182f9212e88982159e45fecd5e7773b",
+    "tests_sha256": "7cf1ace8985ac58dd0cc65802946bfd2b0e94923a877575b971c21416590aee5",
+    "private_w09_sha256": "532c109e085423df7222b8e48271d028a56cb397e1781da7592d202648005f26"
+  },
+  "R6_native": "NOT_TESTED",
+  "independent_security_review": "NOT_PERFORMED",
+  "independent_validator": "NOT_PERFORMED",
+  "root_staging": "NOT_AUTHORIZED",
+  "system_install": "NOT_AUTHORIZED",
+  "active_freebsd": "UNCHANGED"
+}
