@@ -1,0 +1,16 @@
+--- a/tools/agentctl.py
++++ b/tools/agentctl.py
+@@ -449,6 +449,13 @@
+                 record.status == 'RECONCILIATION_REQUIRED'):
+             raise flow.UnknownOutcome('RECOVERY_REQUIRED: PROCESS_EFFECT_UNKNOWN',
+                                       record=record)
++        # Collection is a separate effect: accept only a complete clean run.
++        # This predicate is not independent acceptance or execution authority.
++        if (type(record.exit_code) is not int or record.exit_code != 0 or
++                record.status != 'COMPLETE' or record.result_complete is not True or
++                record.cancelled is not False or record.error is not None):
++            raise flow.UnknownOutcome('RECOVERY_REQUIRED: RUN_NOT_COMPLETE',
++                                      record=record)
+         frozen = candidates.bind_candidate(
+             collect_candidate(), policy.source_root, approved_source,
+             checked_contract['input'], input_manifest)
