@@ -1,0 +1,45 @@
+{
+  "schema": "eta-freebsd-install-security-2026-11-06",
+  "project": "ETA_CHERUB_FULL_FREEBSD",
+  "candidate": "R2_candidate2",
+  "parent_commit": "49f520187daa4a2e09c04a903e030d682b1f9a16",
+  "finding": {
+    "id": "SEC-ACL-01",
+    "severity": "P1",
+    "r1_result": "ACCEPTED_ALL_ACL_TYPES_UNSUPPORTED_REPRO_WITH_MOCK_LIBC",
+    "r1_sha256": "289f14864668fcba6a118a353338588b2557e547c920c77f6a8c577a0f347e62",
+    "r2_behavior": "BLOCKED_IF_NO_SUCCESSFUL_ACCESS_ACL_VALIDATION"
+  },
+  "tested": {
+    "methods": 72,
+    "passed": 72,
+    "failed": 0,
+    "errors": 0,
+    "exit": 0,
+    "platform": "Linux",
+    "python": "3.13.5",
+    "uid": 65534,
+    "gid": 65534,
+    "capabilities": "none by setpriv",
+    "native_freebsd": "NOT_TESTED",
+    "native_libc_acl": "MOCKED_ONLY"
+  },
+  "bytes": {
+    "installer_sha256": "64c34c6a4a8f7f9eac4dff0e113630cef93996d458e9768c162e69034aafeac6",
+    "tests_sha256": "3c4cce13ea5331a624d81796ac0dc240767887142f14b004da29322793743b23",
+    "installer_git_blob": "f030a4020333c6934919d1cbfd2dc9c1acf014ca",
+    "test_git_blob": "b08086e3fac6a3eb605d42c2d94ab4cfabc726ee",
+    "payload_sha256": "023cfa3776f37d9911a18661ff0d6920e3aa68476467b6a5eaeecb209a532b41",
+    "private_zip_sha256": "b336db9fd9ad361d620ae6ad769980115ed7d2367e43754cdb0ea649a8710592",
+    "private_zip_entries": 14,
+    "private_manifest_rows": 13
+  },
+  "current_gate": {
+    "R1_native_plan": "PASS_ONLY_OLD_REVISION",
+    "R1_root_install": "BLOCKED_SECURITY_FINDING",
+    "R2_native_plan": "NOT_TESTED",
+    "R2_root_install": "NOT_AUTHORIZED",
+    "two_independent_reviews": "NOT_PERFORMED",
+    "main": "UNCHANGED"
+  }
+}
