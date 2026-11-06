@@ -9,7 +9,7 @@ Filesystem-engine tests use explicit private image objects, NOT this native CLI.
 from __future__ import annotations
 import argparse
 import ast
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import ctypes
 import errno
 import fcntl
@@ -26,7 +26,7 @@ import subprocess
 import sys
 import zipfile
 
-VERSION = '1.0.0-candidate2'
+VERSION = '1.0.0-candidate3'
 PAYLOAD_SHA = '023cfa3776f37d9911a18661ff0d6920e3aa68476467b6a5eaeecb209a532b41'
 PINS = {
     'agentctl.py': 'a0564e931d4fd3b437613fb204f08e17a2263cfcc372724ac308439c86a5965e',
@@ -412,6 +412,12 @@ class Engine:
         return {'source_files':5,'source_pins':PINS}
     @contextmanager
     def database_lock(self, exclusive=False):
+        """Use SQLite's OWN locking, never flock on its DB file.
+
+        The installer-wide flock remains on the separate .writer.lock file.
+        For withdrawal/recovery hold BEGIN EXCLUSIVE until after final rename
+        and journal commit. SQLite owns all database-file POSIX locks.
+        """
         f = self.fs
         dfd=f.directory(TX+'/state')
         try: f.secure(dfd,directory=True,mode=0o700)
@@ -419,38 +425,45 @@ class Engine:
         need(f.listing(TX+'/state') == ['cherub-state.sqlite3'], 'STATE_EXTRA_FILES_OR_WAL')
         parent,name = f.parent(DATABASE)
         fd = -1
+        db = None
         try:
             fd = os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=parent)
             f.secure(fd,mode=0o600)
-            fcntl.flock(fd,(fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)|fcntl.LOCK_NB)
-            yield fd
+            need(identity(os.fstat(fd))==f.snapshot(DATABASE),'DATABASE_REBOUND')
+            uri=(f.path/DATABASE).as_uri()+ ('?mode=rw' if exclusive else '?mode=ro')
+            db=sqlite3.connect(uri,uri=True,isolation_level=None,timeout=0)
+            db.execute('PRAGMA trusted_schema=OFF')
+            # BEGIN EXCLUSIVE must precede query_only (otherwise SQLite
+            # refuses obtaining a RESERVED/EXCLUSIVE transaction lock).
+            db.execute('BEGIN EXCLUSIVE' if exclusive else 'BEGIN')
+            db.execute('PRAGMA query_only=ON')
+            need(identity(os.fstat(fd))==f.snapshot(DATABASE),'DATABASE_REBOUND')
+            yield (db,fd)
         finally:
+            if db is not None:
+                try:
+                    if db.in_transaction: db.execute('ROLLBACK')
+                finally: db.close()
             if fd>=0: os.close(fd)
             os.close(parent)
-    def database_verify(self, held_fd=None):
-        if held_fd is None:
-            with self.database_lock() as fd: return self.database_verify(fd)
+    def database_verify(self, lease=None):
+        if lease is None:
+            with self.database_lock() as locked: return self.database_verify(locked)
+        db,held_fd=lease
         f = self.fs
         need(f.listing(TX+'/state')==['cherub-state.sqlite3'], 'STATE_EXTRA_FILES_OR_WAL')
         data = f.read(DATABASE,0o600)
         need(data[:16]==b'SQLite format 3\0' and data[18:20]==b'\1\1','STATE_INVALID_OR_WAL')
         before = os.fstat(held_fd)
         need(identity(before)==f.snapshot(DATABASE),'DATABASE_REBOUND')
-        uri = (f.path / DATABASE).as_uri()+'?mode=ro'
-        db = sqlite3.connect(uri,uri=True,isolation_level=None,timeout=0)
-        try:
-            db.execute('PRAGMA query_only=ON'); db.execute('PRAGMA trusted_schema=OFF')
-            db.execute('BEGIN')
-            need(db.execute('PRAGMA application_id').fetchone()[0]==self.pkg.appid and
-                 db.execute('PRAGMA user_version').fetchone()[0]==2,'STATE_VERSION_MISMATCH_NO_MIGRATION')
-            schema = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"))
-            need(schema==self.pkg.schema,'STATE_SCHEMA_MISMATCH')
-            need(db.execute('PRAGMA integrity_check').fetchall()==[('ok',)],'STATE_INTEGRITY_FAIL')
-            counts = {n:db.execute('SELECT count(*) FROM '+n).fetchone()[0] for n in sorted(TABLES)}
-            need(db.execute('PRAGMA foreign_key_check').fetchall()==[],'STATE_FOREIGN_KEY_ERROR')
-            db.execute('ROLLBACK')
-        finally:
-            db.close()
+        need(db.in_transaction,'STATE_SQLITE_LOCK_NOT_HELD')
+        need(db.execute('PRAGMA application_id').fetchone()[0]==self.pkg.appid and
+             db.execute('PRAGMA user_version').fetchone()[0]==2,'STATE_VERSION_MISMATCH_NO_MIGRATION')
+        schema = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"))
+        need(schema==self.pkg.schema,'STATE_SCHEMA_MISMATCH')
+        need(db.execute('PRAGMA integrity_check').fetchall()==[('ok',)],'STATE_INTEGRITY_FAIL')
+        counts = {n:db.execute('SELECT count(*) FROM '+n).fetchone()[0] for n in sorted(TABLES)}
+        need(db.execute('PRAGMA foreign_key_check').fetchall()==[],'STATE_FOREIGN_KEY_ERROR')
         after = os.fstat(held_fd)
         need(identity(before)==identity(after) and before.st_mtime_ns==after.st_mtime_ns
              and before.st_ctime_ns==after.st_ctime_ns and data==f.read(DATABASE,0o600),
@@ -465,20 +478,21 @@ class Engine:
         fd = os.open(name,os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=parent)
         os.close(parent)
         try:
-            fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            # No flock on the database file: SQLite owns its POSIX locks.
+            # The installer is serialized by the separate .writer.lock.
             self.fault('empty_database')
             uri = (f.path/DATABASE).as_uri()+'?mode=rw'
             db = sqlite3.connect(uri,uri=True,isolation_level=None,timeout=0)
             try:
                 need(db.execute('PRAGMA journal_mode=DELETE').fetchone()[0]=='delete','JOURNAL_MODE')
                 db.execute('PRAGMA synchronous=FULL'); db.execute('PRAGMA foreign_keys=ON')
-                db.execute('PRAGMA trusted_schema=OFF'); db.execute('BEGIN IMMEDIATE')
+                db.execute('PRAGMA trusted_schema=OFF'); db.execute('BEGIN EXCLUSIVE')
                 for statement in self.pkg.schema.values(): db.execute(statement)
                 db.execute('PRAGMA application_id='+str(self.pkg.appid)); db.execute('PRAGMA user_version=2')
                 db.execute('COMMIT')
             finally: db.close()
             os.fsync(fd)
-            self.database_verify(fd)
+            self.database_verify()
         finally: os.close(fd)
         dfd=f.directory(TX+'/state')
         try: os.fsync(dfd)
@@ -545,13 +559,21 @@ class Engine:
             else:
                 need(not f.exists(WITHDRAWN) and not (f.exists(FINAL) and f.exists(STAGE)),
                      'ABORT_LOCATION_AMBIGUOUS')
-                # Only an unactivated image can be withdrawn, never a used state DB.
-                if f.exists(DATABASE) and current['state'] not in ('STAGING','STAGED'):
+                # P2: The journal may still say STAGED after a committed DB create.
+                # Any existing database MUST be validated (including empty tables),
+                # even if the event has not advanced. A zero-byte/partial DB is
+                # ambiguous: refuse automatic abort; require manual reconciliation.
+                # Once STAGED is recorded, DB creation may have started and
+                # been interrupted. A missing database cannot prove that no
+                # durable state was ever created; refuse automatic abort.
+                need(f.exists(DATABASE) or current['state'] in
+                     ('PREPARED','STAGING'), 'STATE_FILE_MISSING_OR_UNCERTAIN_AT_STAGED')
+                if f.exists(DATABASE):
                     self.database_verify()
                 for p in (STAGE,FINAL):
                     if f.exists(p): f.inventory(p)
-        snapshot={p:f.snapshot(p) for p in ANCHORS + (TX,STAGE,FINAL,WITHDRAWN)}
-        root_state = self.database_verify() if f.exists(DATABASE) and operation!='abort' else None
+        snapshot={p:f.snapshot(p) for p in ANCHORS + (TX,STAGE,FINAL,WITHDRAWN,DATABASE)}
+        root_state = self.database_verify() if f.exists(DATABASE) else None
         code_files = {'/'+FINAL+'/product/tools/'+n:{'sha256':PINS[n],'bytes':len(b),'mode':'0444'}
                       for n,b in sorted(self.pkg.payload.items())}
         doc={'format':'eta-system-plan/1','installer_version':VERSION,'installer_sha256':self.tool_sha,
@@ -623,12 +645,12 @@ class Engine:
             self.recheck(plan['plan']['anchors_and_destinations'])
             need(self.current()==plan['plan']['observed'],'JOURNAL_CHANGED_SINCE_PLAN')
             self.code_verify()
-            with self.database_lock(exclusive=True) as fd:
-                db=self.database_verify(fd)
+            with self.database_lock(exclusive=True) as lease:
+                db=self.database_verify(lease)
                 need(db==plan['plan']['state_observation'],'STATE_CHANGED_SINCE_PLAN')
                 self.event('WITHDRAWING')
                 self.fs.move(FINAL,WITHDRAWN); self.fault('after_withdraw')
-                self.code_verify(WITHDRAWN); self.database_verify(fd)
+                self.code_verify(WITHDRAWN); self.database_verify(lease)
                 self.event('WITHDRAWN')
             return {'result':'WITHDRAWN_DATA_RETAINED','files_deleted':0,'state_sha256':db['sha256'],
                     'active_product_changed':False,'release':RID}
@@ -646,10 +668,20 @@ class Engine:
                 self.verify_unlocked(WITHDRAWN); self.event('WITHDRAWN')
                 return {'result':'RECOVERED_WITHDRAWAL_DATA_RETAINED','files_deleted':0}
             need(decision=='abort','UNKNOWN_RECOVERY')
-            # Preserve partial code and all DB/journal bytes. Never repeat constructor or delete.
-            for p in (STAGE,FINAL):
-                if self.fs.exists(p): self.fs.move(p,WITHDRAWN)
-            self.event('WITHDRAWN_INCOMPLETE')
+            # P2: if an actual database exists, hold an SQLite EXCLUSIVE lease
+            # through the entire abort; never assume STAGED means DB absent.
+            # Invalid/partial, nonempty or locked databases refuse this operation.
+            has_db=self.fs.exists(DATABASE)
+            need(has_db == (plan['plan']['state_observation'] is not None),
+                 'ABORT_STATE_PRESENCE_CHANGED')
+            with (self.database_lock(exclusive=True) if has_db else nullcontext(None)) as lease:
+                if has_db:
+                    observed=self.database_verify(lease)
+                    need(observed==plan['plan']['state_observation'],
+                         'ABORT_STATE_CHANGED_SINCE_PLAN')
+                for p in (STAGE,FINAL):
+                    if self.fs.exists(p): self.fs.move(p,WITHDRAWN)
+                self.event('WITHDRAWN_INCOMPLETE')
             return {'result':'ABORTED_PARTIAL_DATA_RETAINED','files_deleted':0,'release':RID}
 
 

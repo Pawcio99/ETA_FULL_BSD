@@ -211,12 +211,51 @@ class InstallerTests(unittest.TestCase):
         with self.e.fs.lock(write=True,create=True):
             with self.assertRaises(BlockingIOError):self.e.plan()
     def test_database_writer_blocks_verify_and_withdraw(self):
-        self.install();fd=os.open(self.db(),os.O_RDONLY)
+        self.install()
+        writer=sqlite3.connect(self.db(),timeout=0,isolation_level=None)
         try:
-            import fcntl;fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            with self.assertRaises(BlockingIOError):self.e.verify()
-            with self.assertRaises(BlockingIOError):self.e.plan('withdraw')
-        finally:os.close(fd)
+            writer.execute('BEGIN EXCLUSIVE')
+            with self.assertRaisesRegex(sqlite3.OperationalError,'locked'):
+                self.e.verify()
+            with self.assertRaisesRegex(sqlite3.OperationalError,'locked'):
+                self.e.plan('withdraw')
+        finally:
+            writer.execute('ROLLBACK');writer.close()
+    def test_no_flock_on_database_fd_during_install_and_withdraw(self):
+        import fcntl
+        true_flock=fcntl.flock
+        checked={'calls':0}
+        def guarded(fd,operation):
+            if self.db().exists():
+                a=os.fstat(fd); b=self.db().stat()
+                self.assertNotEqual((a.st_dev,a.st_ino),(b.st_dev,b.st_ino),
+                                    'P1: flock used on SQLite database file')
+            checked['calls']+=1
+            return true_flock(fd,operation)
+        with patch.object(s.fcntl,'flock',side_effect=guarded):
+            self.install()
+            self.e.withdraw(self.e.plan('withdraw')['plan_sha256'])
+        self.assertGreater(checked['calls'],0)
+    def test_sqlite_exclusive_lease_rejects_external_writer(self):
+        self.install()
+        with self.e.database_lock(exclusive=True) as lease:
+            self.e.database_verify(lease)
+            competing=sqlite3.connect(self.db(),timeout=0,isolation_level=None)
+            try:
+                with self.assertRaisesRegex(sqlite3.OperationalError,'locked'):
+                    competing.execute('BEGIN IMMEDIATE')
+            finally:
+                competing.close()
+        after=sqlite3.connect(self.db(),timeout=0,isolation_level=None)
+        try:
+            after.execute('BEGIN IMMEDIATE'); after.execute('ROLLBACK')
+        finally:
+            after.close()
+    def test_sqlite_exclusive_lease_is_not_a_database_mutation(self):
+        self.install();before=snapshot(self.root)
+        with self.e.database_lock(exclusive=True) as lease:
+            self.e.database_verify(lease)
+        self.assertEqual(snapshot(self.root),before)
     def test_rollback_retains_identical_db(self):
         self.install();before=self.db().read_bytes()
         r=self.e.withdraw(self.e.plan('withdraw')['plan_sha256'])
@@ -251,9 +290,94 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.e.status()['result'],'WITHDRAWN_INCOMPLETE_DATA_RETAINED')
     def test_crash_empty_db_not_recreated(self):
         self.crash('empty_database');self.assertEqual(self.db().stat().st_size,0)
-        with self.assertRaisesRegex(s.Blocked,'STATE_INVALID'):self.e.plan('complete')
-        self.e.recover('abort',self.e.plan('abort')['plan_sha256'])
+        before=snapshot(self.root)
+        with self.assertRaisesRegex(s.Blocked,'STATE_INVALID'):
+            self.e.plan('complete')
+        # P2: A partial DB cannot be proven unused: preserve everything and refuse.
+        with self.assertRaisesRegex(s.Blocked,'STATE_INVALID'):
+            self.e.plan('abort')
         self.assertEqual(self.db().stat().st_size,0)
+        self.assertEqual(snapshot(self.root),before)
+    def test_external_process_sqlite_writer_blocks_withdraw(self):
+        self.install()
+        worker=subprocess.Popen([sys.executable,'-I','-B','-c',
+            "import sqlite3,sys;db=sqlite3.connect(sys.argv[1],timeout=0,isolation_level=None);"
+            "db.execute('BEGIN EXCLUSIVE');print('LOCKED',flush=True);sys.stdin.readline();"
+            "db.execute('ROLLBACK');db.close()", str(self.db())],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        try:
+            self.assertEqual(worker.stdout.readline().strip(),'LOCKED')
+            before=snapshot(self.root)
+            with self.assertRaisesRegex(sqlite3.OperationalError,'locked'):
+                self.e.plan('withdraw')
+            self.assertEqual(snapshot(self.root),before)
+        finally:
+            if worker.poll() is None:
+                worker.stdin.write('release\n'); worker.stdin.flush()
+            stdout,stderr=worker.communicate(timeout=8)
+        self.assertEqual(worker.returncode,0,stderr)
+    def test_abort_plan_includes_database_identity(self):
+        self.crash('after_database')
+        plan=self.e.plan('abort')
+        self.assertIn(s.DATABASE,plan['plan']['anchors_and_destinations'])
+        self.assertIsNotNone(plan['plan']['anchors_and_destinations'][s.DATABASE])
+    def test_abort_after_committed_database_requires_valid_unused_state(self):
+        self.crash('after_database')
+        before=self.db().read_bytes()
+        plan=self.e.plan('abort')
+        self.assertEqual(plan['plan']['state_observation']['rows'],
+                         {k:0 for k in s.TABLES})
+        result=self.e.recover('abort',plan['plan_sha256'])
+        self.assertEqual(result['result'],'ABORTED_PARTIAL_DATA_RETAINED')
+        self.assertEqual(self.db().read_bytes(),before)
+        self.assertEqual(self.e.status()['result'],'WITHDRAWN_INCOMPLETE_DATA_RETAINED')
+    def test_abort_after_committed_db_nonempty_refused(self):
+        self.crash('after_database')
+        with sqlite3.connect(self.db()) as db:
+            db.execute('INSERT INTO projects VALUES (?,?,?,?)',('x',1,'p','m'))
+        before=snapshot(self.root)
+        with self.assertRaisesRegex(s.Blocked,'STATE_IN_USE'):
+            self.e.plan('abort')
+        self.assertEqual(snapshot(self.root),before)
+    def test_abort_with_writer_started_after_plan_is_refused(self):
+        self.crash('after_database')
+        plan=self.e.plan('abort')
+        writer=sqlite3.connect(self.db(),timeout=0,isolation_level=None)
+        try:
+            writer.execute('BEGIN EXCLUSIVE')
+            before=snapshot(self.root)
+            with self.assertRaisesRegex(sqlite3.OperationalError,'locked'):
+                self.e.recover('abort',plan['plan_sha256'])
+            self.assertEqual(snapshot(self.root),before)
+        finally:
+            writer.execute('ROLLBACK');writer.close()
+    def test_abort_after_plan_if_db_became_nonempty_refused(self):
+        self.crash('after_database')
+        plan=self.e.plan('abort')
+        with sqlite3.connect(self.db()) as db:
+            db.execute('INSERT INTO projects VALUES (?,?,?,?)',('x',1,'p','m'))
+        before=snapshot(self.root)
+        with self.assertRaises((s.Blocked,sqlite3.OperationalError)):
+            self.e.recover('abort',plan['plan_sha256'])
+        self.assertEqual(snapshot(self.root),before)
+    def test_abort_after_staged_journal_with_missing_db_is_non_destructive(self):
+        self.crash('after_database')
+        self.db().unlink()
+        with self.assertRaisesRegex(s.Blocked,'STATE_EXTRA_FILES_OR_WAL'):
+            self.e.plan('complete')
+        before=snapshot(self.root)
+        # Completed-schema bytes were lost. No dangerous attempt to recreate.
+        # Operator must retain the partially staged code for separate recovery.
+        with self.assertRaises((s.Blocked,OSError)):
+            self.e.plan('abort')
+        self.assertEqual(snapshot(self.root),before)
+    def test_staged_event_without_db_refuses_automatic_abort(self):
+        self.crash('event_STAGED')
+        self.assertFalse(self.db().exists())
+        before=snapshot(self.root)
+        with self.assertRaisesRegex(s.Blocked,'STATE_FILE_MISSING_OR_UNCERTAIN'):
+            self.e.plan('abort')
+        self.assertEqual(snapshot(self.root),before)
     def test_crash_after_db_complete_no_reinit(self):
         self.crash('after_database');before=self.db().read_bytes()
         r=self.e.recover('complete',self.e.plan('complete')['plan_sha256'])

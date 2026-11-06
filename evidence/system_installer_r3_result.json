@@ -1,0 +1,43 @@
+{
+  "project": "ETA_CHERUB_FULL_FreeBSD_15.1",
+  "candidate": "R3",
+  "base_commit": "c3f360fde40c05dab4a75841dcbee0730583155f",
+  "scope": "FIVE_MODULE_W09_INACTIVE_CORE",
+  "fixes": [
+    "P1_SQLITE_LOCK_UNIFIED_WITH_SQLITE_TRANSACTIONS",
+    "P2_ABORT_VALIDATES_STATE_AND_REFUSES_UNCERTAIN"
+  ],
+  "r2_p2_reproduced": true,
+  "tests": {
+    "offhost_count": 83,
+    "pass": 83,
+    "fail": 0,
+    "errors": 0,
+    "exit": 0,
+    "os": "Linux",
+    "python": "3.13.5",
+    "sqlite": "3.46.1",
+    "uid": 65534,
+    "gid": 65534,
+    "cap_eff": "0",
+    "no_new_privs": 1,
+    "platform_freebsd": "NOT_TESTED"
+  },
+  "hashes": {
+    "installer_sha256": "b3c9e4d984c2e5851d8e52a8f7831718b99da2280e9ea442379b8aa560591dc8",
+    "installer_blob": "afa829df96d2a5173e46265da08a40d5d26f26c4",
+    "test_sha256": "ce5d90348ef93f555bd42f1eb8a796eafac56efbff1acf0031e89bd6c14fcc9e",
+    "test_blob": "7bb79abc7ab510f73e5512b26ba10cd6c91fd1bd",
+    "native_probe_sha256": "95a015b5facfe00b1dbc4d932c39db6bfc4e3f717e7627ce5fc4129522ab6cf1",
+    "native_probe_blob": "9a76b706464b890fb0fde7e382b861020147cca5",
+    "private_package_sha256": "c8198aa6f3ed283c3c1aec8a8ed6898a4d182c5678157b96ad5879c45078205b",
+    "unchanged_w09_payload_sha256": "023cfa3776f37d9911a18661ff0d6920e3aa68476467b6a5eaeecb209a532b41"
+  },
+  "native_R3": "NOT_TESTED",
+  "independent_reviews_R3": "NOT_PERFORMED",
+  "r2_staged_on_host": "OPERATOR_REPORTED_PASS",
+  "r3_staged_on_host": false,
+  "r3_system_install": false,
+  "product_execution": false,
+  "main_changed": false
+}
