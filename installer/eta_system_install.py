@@ -26,7 +26,7 @@ import subprocess
 import sys
 import zipfile
 
-VERSION = '1.0.0-candidate3'
+VERSION = '1.0.0-candidate4'
 PAYLOAD_SHA = '023cfa3776f37d9911a18661ff0d6920e3aa68476467b6a5eaeecb209a532b41'
 PINS = {
     'agentctl.py': 'a0564e931d4fd3b437613fb204f08e17a2263cfcc372724ac308439c86a5965e',
@@ -410,6 +410,29 @@ class Engine:
             try: self.fs.secure(fd,directory=True,mode=0o755)
             finally: os.close(fd)
         return {'source_files':5,'source_pins':PINS}
+    def _db_identity_without_open(self, held_fd):
+        """Stat name under trusted dir FD; NEVER open/close a second DB FD.
+
+        On POSIX advisory locks (SQLite's default Unix VFS), closing *any*
+        other descriptor for the same inode can release this process's SQLite
+        record locks. `Tree.snapshot(DATABASE)` is therefore unsafe while a
+        SQLite transaction is alive, even though it only performs a read.
+        """
+        parent, name = self.fs.parent(DATABASE)
+        try:
+            current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            need(stat.S_ISREG(current.st_mode) and
+                 identity(current) == identity(os.fstat(held_fd)),
+                 'DATABASE_REBOUND')
+            return current
+        finally:
+            os.close(parent)
+
+    def _read_database_on_retained_fd(self, held_fd):
+        """Read DB through pre-opened FD, without another database open/close."""
+        os.lseek(held_fd, 0, os.SEEK_SET)
+        return read_fd(held_fd)
+
     @contextmanager
     def database_lock(self, exclusive=False):
         """Use SQLite's OWN locking, never flock on its DB file.
@@ -429,7 +452,7 @@ class Engine:
         try:
             fd = os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=parent)
             f.secure(fd,mode=0o600)
-            need(identity(os.fstat(fd))==f.snapshot(DATABASE),'DATABASE_REBOUND')
+            self._db_identity_without_open(fd)
             uri=(f.path/DATABASE).as_uri()+ ('?mode=rw' if exclusive else '?mode=ro')
             db=sqlite3.connect(uri,uri=True,isolation_level=None,timeout=0)
             db.execute('PRAGMA trusted_schema=OFF')
@@ -437,7 +460,7 @@ class Engine:
             # refuses obtaining a RESERVED/EXCLUSIVE transaction lock).
             db.execute('BEGIN EXCLUSIVE' if exclusive else 'BEGIN')
             db.execute('PRAGMA query_only=ON')
-            need(identity(os.fstat(fd))==f.snapshot(DATABASE),'DATABASE_REBOUND')
+            self._db_identity_without_open(fd)
             yield (db,fd)
         finally:
             if db is not None:
@@ -452,10 +475,10 @@ class Engine:
         db,held_fd=lease
         f = self.fs
         need(f.listing(TX+'/state')==['cherub-state.sqlite3'], 'STATE_EXTRA_FILES_OR_WAL')
-        data = f.read(DATABASE,0o600)
+        data = self._read_database_on_retained_fd(held_fd)
         need(data[:16]==b'SQLite format 3\0' and data[18:20]==b'\1\1','STATE_INVALID_OR_WAL')
         before = os.fstat(held_fd)
-        need(identity(before)==f.snapshot(DATABASE),'DATABASE_REBOUND')
+        self._db_identity_without_open(held_fd)
         need(db.in_transaction,'STATE_SQLITE_LOCK_NOT_HELD')
         need(db.execute('PRAGMA application_id').fetchone()[0]==self.pkg.appid and
              db.execute('PRAGMA user_version').fetchone()[0]==2,'STATE_VERSION_MISMATCH_NO_MIGRATION')
@@ -466,7 +489,7 @@ class Engine:
         need(db.execute('PRAGMA foreign_key_check').fetchall()==[],'STATE_FOREIGN_KEY_ERROR')
         after = os.fstat(held_fd)
         need(identity(before)==identity(after) and before.st_mtime_ns==after.st_mtime_ns
-             and before.st_ctime_ns==after.st_ctime_ns and data==f.read(DATABASE,0o600),
+             and before.st_ctime_ns==after.st_ctime_ns and data==self._read_database_on_retained_fd(held_fd),
              'STATE_CHANGED_DURING_VERIFY')
         need(not any(counts.values()),'STATE_IN_USE_REQUIRES_SEPARATE_RECONCILIATION')
         return {'user_version':2,'sha256':sha(data),'rows':counts,'runtime_owner':'root-quarantined'}

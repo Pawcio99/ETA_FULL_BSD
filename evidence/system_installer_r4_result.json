@@ -1,0 +1,42 @@
+{
+  "schema": "eta-installer-r4-source-only/1",
+  "project": "ETA_CHERUB_FULL_FreeBSD_15.1",
+  "parent": "d25921733c03e83cbb38a7d2b3bf647d526a82b5",
+  "scope": "FIVE_MODULE_INACTIVE_W09_ONLY",
+  "issue": "P1_SQLITE_POSIX_LOCK_DROPPED_BY_INDEPENDENT_DESCRIPTOR_CLOSE",
+  "review_url": "https://github.com/Pawcio99/ETA_FULL_BSD/pull/3#discussion_r4497639452",
+  "reproduced_R3": {
+    "os": "Linux",
+    "external_process_acquired_exclusive": true,
+    "result": "FAIL",
+    "exit": 0
+  },
+  "R4": {
+    "os": "Linux",
+    "external_process_acquired_exclusive": false,
+    "result": "PASS",
+    "tests": 86,
+    "passed": 86,
+    "failed": 0,
+    "exit": 0,
+    "real_child_processes": true,
+    "python": "3.13.5",
+    "sqlite": "3.46.1",
+    "uid": 65534
+  },
+  "pins": {
+    "installer_sha256": "e2fd3d96d351098f345df9d7bfb04614e409b741a6adc4a30cfbd91c362b1147",
+    "installer_git_blob": "f6c3e2c43a36f724f40a72a03f7f665b86e84137",
+    "tests_sha256": "95515ebe298d45a664040067e6c63cdcf4d237b6e482f4a852edc59a865ae352",
+    "tests_git_blob": "7d84e848dd095f438e5c867e79b46bb04f360edc",
+    "private_zip_sha256": "2b5b0f1d71f62b62417163be00c5957872f06d08ca84e7516b17039610b15df0",
+    "private_manifest_sha256": "b7b4c53aa4ce0d3cd424bc40a36619c47162b18003a403dd401fccb8e84b3ed1",
+    "unchanged_W09_payload": "023cfa3776f37d9911a18661ff0d6920e3aa68476467b6a5eaeecb209a532b41"
+  },
+  "native_freebsd_r4": "NOT_TESTED",
+  "native_root_stage_r4": "NOT_AUTHORIZED",
+  "native_system_install_r4": "NOT_AUTHORIZED",
+  "r2_root_stage": "OPERATOR_REPORTED_PASS_ONLY_R2",
+  "reviews_r4": "NOT_PERFORMED",
+  "active_eta_modified": false
+}

@@ -251,6 +251,53 @@ class InstallerTests(unittest.TestCase):
             after.execute('BEGIN IMMEDIATE'); after.execute('ROLLBACK')
         finally:
             after.close()
+    def _external_exclusive_writer(self):
+        """Separate Python process: SQLite BEGIN EXCLUSIVE, never flock."""
+        return subprocess.run([sys.executable, '-I', '-B', '-c',
+            "import sqlite3,sys; db=sqlite3.connect(sys.argv[1],timeout=0,"
+            "isolation_level=None); db.execute('BEGIN EXCLUSIVE'); "
+            "print('EXCLUSIVE_ACQUIRED'); db.execute('ROLLBACK'); db.close()",
+            str(self.db())], capture_output=True, text=True, timeout=10)
+    def _assert_sqlite_exclusive_not_acquired(self):
+        contender=self._external_exclusive_writer()
+        self.assertNotEqual(contender.returncode,0,
+            'P1: second process acquired an EXCLUSIVE DB lock while installer owns lease')
+        self.assertIn('locked',contender.stderr.lower())
+    def test_r4_p1_db_verify_does_not_drop_sqlite_kernel_lock(self):
+        """Specifically reproduces R3's close-induced lock loss."""
+        self.install()
+        with self.e.database_lock(exclusive=True) as lease:
+            self.e.database_verify(lease)
+            self._assert_sqlite_exclusive_not_acquired()
+            self.e.database_verify(lease)
+            self._assert_sqlite_exclusive_not_acquired()
+        contender=self._external_exclusive_writer()
+        self.assertEqual(contender.returncode,0,contender.stderr)
+        self.assertEqual(contender.stdout.strip(),'EXCLUSIVE_ACQUIRED')
+    def test_r4_p1_withdraw_retains_sqlite_lock_through_rename(self):
+        self.install()
+        plan=self.e.plan('withdraw')
+        move=self.e.fs.move
+        def verify_lock_before_move(source,destination):
+            if source==s.FINAL:
+                self._assert_sqlite_exclusive_not_acquired()
+            return move(source,destination)
+        with patch.object(self.e.fs,'move',side_effect=verify_lock_before_move):
+            self.e.withdraw(plan['plan_sha256'])
+        self.assertEqual(self.e.status()['result'],'WITHDRAWN_DATA_RETAINED')
+        self.assertEqual(self._external_exclusive_writer().returncode,0)
+    def test_r4_p1_abort_retains_sqlite_lock_through_rename(self):
+        self.crash('after_database')
+        plan=self.e.plan('abort')
+        move=self.e.fs.move
+        def verify_lock_before_move(source,destination):
+            if source==s.STAGE:
+                self._assert_sqlite_exclusive_not_acquired()
+            return move(source,destination)
+        with patch.object(self.e.fs,'move',side_effect=verify_lock_before_move):
+            self.e.recover('abort',plan['plan_sha256'])
+        self.assertEqual(self.e.status()['result'],'WITHDRAWN_INCOMPLETE_DATA_RETAINED')
+        self.assertEqual(self._external_exclusive_writer().returncode,0)
     def test_sqlite_exclusive_lease_is_not_a_database_mutation(self):
         self.install();before=snapshot(self.root)
         with self.e.database_lock(exclusive=True) as lease:
