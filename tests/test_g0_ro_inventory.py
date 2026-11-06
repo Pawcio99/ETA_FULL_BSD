@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-FILE = Path(__file__).with_name('g0_ro_inventory.py')
+FILE = Path(__file__).resolve().parents[1] / 'tools' / 'g0_ro_inventory.py'
 sp = importlib.util.spec_from_file_location('inventory', FILE)
 inv = importlib.util.module_from_spec(sp)
 sp.loader.exec_module(inv)
